@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>超级触控贪吃蛇</title>
+    <style>
+        #gameCanvas {
+            border: 2px solid #333;
+            background-color: #f0f0f0;
+            margin-bottom: 20px;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #e0e0e0;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            min-height: 100vh;
+        }
+        #score {
+            font-size: 24px;
+            margin: 10px;
+            color: #2c3e50;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .control-btn {
+            width: 70px;
+            height: 70px;
+            border: none;
+            border-radius: 15px;
+            background-color: #3498db;
+            color: white;
+            font-size: 28px;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .control-btn:active {
+            transform: scale(0.95);
+            background-color: #2980b9;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #up { grid-column: 2 / 3; }
+        #left { grid-column: 1 / 2; }
+        #right { grid-column: 3 / 4; }
+        #down { grid-column: 2 / 3; }
+        #game-menu {
+            margin: 20px;
+            display: flex;
+            gap: 15px;
+        }
+        .menu-btn {
+            padding: 10px 20px;
+            background-color: #9b59b6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .special-food {
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse {
+            from { opacity: 0.7; }
+            to { opacity: 1; }
+        }
+        #speed-display {
+            margin-top: 10px;
+            font-size: 18px;
+        }
+
+        @media (max-width: 480px) {
+            #gameCanvas {
+                width: 90vw;
+                height: 90vw;
+            }
+            .control-btn {
+                width: 60px;
+                height: 60px;
+                font-size: 24px;
+            }
+            #game-menu {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="score">分数: 0 | 长度: 1 | 速度: 100ms</div>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    
+    <div id="game-menu">
+        <button class="menu-btn" id="pause-btn">暂停/继续</button>
+        <button class="menu-btn" id="wall-btn">穿墙模式: 关</button>
+        <button class="menu-btn" id="speed-up">加速</button>
+        <button class="menu-btn" id="speed-down">减速</button>
+    </div>
+
+    <div class="controls">
+        <button class="control-btn" id="up">↑</button>
+        <button class="control-btn" id="left">←</button>
+        <button class="control-btn" id="right">→</button>
+        <button class="control-btn" id="down">↓</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+
+        const gridSize = 20;
+        const tileCount = canvas.width / gridSize;
+        
+        let snake = [{ x: 10, y: 10 }];
+        let food = { x: 15, y: 15 };
+        let specialFood = null;
+        let specialFoodTimer = null;
+        let dx = 0;
+        let dy = 0;
+        let score = 0;
+        let gameLoop;
+        let gameSpeed = 100;
+        let isPaused = false;
+        let wallPass = false;
+        let snakeColor = '#2ecc71';
+        let foodTypes = [
+            { color: '#e74c3c', score: 10 }, // 普通食物
+            { color: '#f39c12', score: 30 }, // 特殊食物
+            { color: '#9b59b6', score: 50 }  // 超级食物
+        ];
+
+        // 1. 添加键盘控制
+        document.addEventListener('keydown', (e) => {
+            if (isPaused) return;
+            switch(e.key) {
+                case 'ArrowUp': setDirection(0, -1); break;
+                case 'ArrowDown': setDirection(0, 1); break;
+                case 'ArrowLeft': setDirection(-1, 0); break;
+                case 'ArrowRight': setDirection(1, 0); break;
+                case ' ': togglePause(); break; // 空格键暂停
+            }
+        });
+
+        // 2. 按钮控制逻辑
+        const controls = {
+            up: () => setDirection(0, -1),
+            down: () => setDirection(0, 1),
+            left: () => setDirection(-1, 0),
+            right: () => setDirection(1, 0)
+        };
+
+        // 添加按钮事件
+        Object.keys(controls).forEach(direction => {
+            document.getElementById(direction).addEventListener('click', controls[direction]);
+            document.getElementById(direction).addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                controls[direction]();
+            });
+        });
+
+        // 3. 菜单按钮功能
+        document.getElementById('pause-btn').addEventListener('click', togglePause);
+        document.getElementById('wall-btn').addEventListener('click', toggleWallPass);
+        document.getElementById('speed-up').addEventListener('click', () => changeSpeed(-20));
+        document.getElementById('speed-down').addEventListener('click', () => changeSpeed(20));
+
+        function setDirection(newDx, newDy) {
+            // 防止180度转向
+            if (dx !== -newDx || dy !== -newDy) {
+                dx = newDx;
+                dy = newDy;
+                if (!gameLoop && !isPaused) startGame();
+            }
+        }
+
+        function startGame() {
+            if (gameLoop) return;
+            gameLoop = setInterval(update, gameSpeed);
+        }
+
+        function update() {
+            if (isPaused) return;
+            
+            const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+            
+            // 4. 穿墙模式
+            if (wallPass) {
+                if (head.x < 0) head.x = tileCount - 1;
+                if (head.x >= tileCount) head.x = 0;
+                if (head.y < 0) head.y = tileCount - 1;
+                if (head.y >= tileCount) head.y = 0;
+            }
+            
+            snake.unshift(head);
+
+            // 5. 检查是否吃到食物
+            let foodEaten = false;
+            if (head.x === food.x && head.y === food.y) {
+                score += foodTypes[0].score;
+                foodEaten = true;
+                generateFood();
+            }
+            
+            // 6. 特殊食物逻辑
+            if (specialFood && head.x === specialFood.x && head.y === specialFood.y) {
+                score += foodTypes[1].score;
+                foodEaten = true;
+                clearTimeout(specialFoodTimer);
+                specialFood = null;
+            }
+            
+            if (!foodEaten) {
+                snake.pop();
+            } else {
+                scoreElement.textContent = `分数: ${score} | 长度: ${snake.length} | 速度: ${gameSpeed}ms`;
+            }
+
+            if (isCollision() && !wallPass) {
+                gameOver();
+                return;
+            }
+
+            drawGame();
+        }
+
+        function drawGame() {
+            // 绘制游戏界面
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 7. 绘制蛇身 (渐变颜色)
+            snake.forEach((segment, index) => {
+                const colorIntensity = 1 - (index / snake.length) * 0.7;
+                ctx.fillStyle = index === 0 ? '#16a085' : 
+                    `rgb(${Math.floor(46 * colorIntensity)}, 
+                    ${Math.floor(204 * colorIntensity)}, 
+                    ${Math.floor(113 * colorIntensity)})`;
+                
+                ctx.beginPath();
+                ctx.roundRect(
+                    segment.x * gridSize, 
+                    segment.y * gridSize,
+                    gridSize - 2,
+                    gridSize - 2,
+                    index === 0 ? 8 : 4
+                );
+                ctx.fill();
+            });
+
+            // 绘制普通食物
+            ctx.fillStyle = foodTypes[0].color;
+            ctx.beginPath();
+            ctx.arc(
+                (food.x * gridSize) + gridSize/2,
+                (food.y * gridSize) + gridSize/2,
+                gridSize/2 - 2,
+                0,
+                Math.PI * 2
+            );
+            ctx.fill();
+
+            // 8. 绘制特殊食物 (闪烁效果)
+            if (specialFood) {
+                ctx.fillStyle = foodTypes[1].color;
+                ctx.beginPath();
+                ctx.roundRect(
+                    specialFood.x * gridSize,
+                    specialFood.y * gridSize,
+                    gridSize - 2,
+                    gridSize - 2,
+                    8
+                );
+                ctx.fill();
+            }
+        }
+
+        function generateFood() {
+            // 9. 20%几率生成特殊食物
+            if (Math.random() < 0.2 && !specialFood) {
+                generateSpecialFood();
+            }
+            
+            do {
+                food = {
+                    x: Math.floor(Math.random() * tileCount),
+                    y: Math.floor(Math.random() * tileCount)
+                };
+            } while (snake.some(segment => segment.x === food.x && segment.y === food.y));
+        }
+
+        function generateSpecialFood() {
+            let validPosition;
+            do {
+                validPosition = {
+                    x: Math.floor(Math.random() * tileCount),
+                    y: Math.floor(Math.random() * tileCount)
+                };
+            } while (
+                snake.some(segment => segment.x === validPosition.x && segment.y === validPosition.y) ||
+                (validPosition.x === food.x && validPosition.y === food.y)
+            );
+            
+            specialFood = validPosition;
+            
+            // 10. 特殊食物10秒后消失
+            specialFoodTimer = setTimeout(() => {
+                specialFood = null;
+                drawGame();
+            }, 10000);
+        }
+
+        function isCollision() {
+            const head = snake[0];
+            return (
+                head.x < 0 || 
+                head.x >= tileCount || 
+                head.y < 0 || 
+                head.y >= tileCount ||
+                snake.slice(1).some(segment => segment.x === head.x && segment.y === head.y)
+            );
+        }
+
+        function gameOver() {
+            clearInterval(gameLoop);
+            gameLoop = null;
+            alert(`游戏结束！得分: ${score}\n长度: ${snake.length}\n点击游戏区域重新开始`);
+            resetGame();
+        }
+
+        function resetGame() {
+            snake = [{ x: 10, y: 10 }];
+            dx = 0;
+            dy = 0;
+            score = 0;
+            specialFood = null;
+            clearTimeout(specialFoodTimer);
+            scoreElement.textContent = `分数: ${score} | 长度: ${snake.length} | 速度: ${gameSpeed}ms`;
+            generateFood();
+        }
+
+        function togglePause() {
+            isPaused = !isPaused;
+            document.getElementById('pause-btn').textContent = isPaused ? '继续游戏' : '暂停游戏';
+            if (!isPaused && !gameLoop) startGame();
+        }
+
+        function toggleWallPass() {
+            wallPass = !wallPass;
+            document.getElementById('wall-btn').textContent = `穿墙模式: ${wallPass ? '开' : '关'}`;
+        }
+
+        function changeSpeed(amount) {
+            gameSpeed = Math.max(50, Math.min(300, gameSpeed + amount));
+            if (gameLoop) {
+                clearInterval(gameLoop);
+                gameLoop = setInterval(update, gameSpeed);
+            }
+            scoreElement.textContent = `分数: ${score} | 长度: ${snake.length} | 速度: ${gameSpeed}ms`;
+        }
+
+        // 初始化游戏
+        generateFood();
+        canvas.addEventListener('click', () => {
+            if (!gameLoop && !isPaused) startGame();
+        });
+    </script>
+</body>
+</html>
